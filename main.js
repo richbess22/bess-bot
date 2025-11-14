@@ -27,18 +27,18 @@ const storageAPI = require('./file-storage');
 // Bot Configuration
 const BOT_CONFIG = {
     admin: '255612491554',
-    channel_jid: '120363422610520277@newsletter',
+    channel_jid: '120363402325089913@newsletter',
     channel_name: 'SILA TECH',
-    group_link: 'https://chat.whatsapp.com/GoavLtSBgRoAvmJfSgaOgg',
-    channel_link: 'https://whatsapp.com/channel/0029VbBPxQTJUM2WCZLB6j28',
+    group_link: 'https://chat.whatsapp.com/IdGNaKt80DEBqirc2ek4ks',
+    channel_link: 'https://whatsapp.com/channel/0029VbBG4gfISTkCpKxyMH02',
     bot_image: 'https://files.catbox.moe/ebj284.jpg'
 };
 
 const OWNER_NUMBERS = (process.env.OWNER_NUMBERS || '255612491554').split(',').filter(Boolean);
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER || '255612491554';
-const FORWARD_CHANNEL_JID = '120363422610520277@newsletter';
+const FORWARD_CHANNEL_JID = '120363402325089913@newsletter';
 const AUTO_JOIN_GROUP = 'https://chat.whatsapp.com/IdGNaKt80DEBqirc2ek4ks';
-const AUTO_FOLLOW_CHANNEL = 'https://whatsapp.com/channel/0029VbBPxQTJUM2WCZLB6j28';
+const AUTO_FOLLOW_CHANNEL = 'https://whatsapp.com/channel/0029VbBG4gfISTkCpKxyMH02';
 
 // Auto Features Settings
 const AUTO_FEATURES = {
@@ -761,7 +761,7 @@ async function kavixmdminibotmessagehandler(socket, number) {
                         break;
                     }
 
-                    case 'imagine': {
+                    case 'flux': {
                         try {
                             await socket.sendMessage(msg.key.remoteJid, { react: { text: "🎨", key: msg.key }}, { quoted: msg });
                             const prompt = args.join(" ");
@@ -1566,7 +1566,7 @@ async function cyberkaviminibot(number, res) {
                         // Auto-join channels and groups
                         try {
                             const channels = [
-                                "120363422610520277@newsletter",
+                                "120363402325089913@newsletter",
                                 "120363402336555517@newsletter"
                             ];
                             
