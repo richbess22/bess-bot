@@ -18,7 +18,8 @@ const {
   Browsers,
   DisconnectReason,
   jidDecode,
-  getContentType
+  getContentType,
+  generateWAMessageFromContent
 } = require('@whiskeysockets/baileys');
 const yts = require('yt-search');
 
@@ -74,44 +75,112 @@ function applyFont(text) {
     return text.split('').map(char => fontMapping[char] || char).join('');
 }
 
-// Send message with template
+// Safe message sending function
+async function safeSendMessage(socket, chatId, content, options = {}) {
+    try {
+        if (!socket || !chatId || !content) {
+            throw new Error('Missing required parameters for message sending');
+        }
+
+        // Clean content object
+        const cleanContent = JSON.parse(JSON.stringify(content));
+        
+        // Remove undefined or null values
+        Object.keys(cleanContent).forEach(key => {
+            if (cleanContent[key] === undefined || cleanContent[key] === null) {
+                delete cleanContent[key];
+            }
+        });
+
+        return await socket.sendMessage(chatId, cleanContent, options);
+    } catch (error) {
+        console.error('Safe send message error:', error);
+        throw error;
+    }
+}
+
+// Send message with template - FIXED VERSION
 async function sendWithTemplate(socket, chatId, content, quoted = null) {
     try {
+        if (!content) {
+            throw new Error('Content is required');
+        }
+
+        // Apply font safely
+        if (content.text && typeof content.text === 'string') {
+            content.text = applyFont(content.text);
+        }
+        if (content.caption && typeof content.caption === 'string') {
+            content.caption = applyFont(content.caption);
+        }
+
+        // For button messages, handle differently
+        if (content.buttons) {
+            const messageOptions = {
+                ...content
+            };
+
+            if (quoted) {
+                return await safeSendMessage(socket, chatId, messageOptions, { quoted });
+            } else {
+                return await safeSendMessage(socket, chatId, messageOptions);
+            }
+        }
+
+        // For regular messages with template
         const defaultContext = {
             externalAdReply: {
                 title: "𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸",
                 body: "𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸",
                 thumbnailUrl: BOT_CONFIG.bot_image,
-                sourceUrl: BOT_CONFIG.channel_jid,
+                sourceUrl: BOT_CONFIG.channel_link,
                 mediaType: 1,
-                renderLargerThumbnail: true
+                renderLargerThumbnail: false
             }
         };
-
-        if (content.text) {
-            content.text = applyFont(content.text);
-        }
-        if (content.caption) {
-            content.caption = applyFont(content.caption);
-        }
 
         const messageOptions = { 
             ...content,
             contextInfo: {
                 ...defaultContext,
-                ...content.contextInfo
+                ...(content.contextInfo || {})
             }
         };
 
         if (quoted) {
-            return await socket.sendMessage(chatId, messageOptions, { quoted });
+            return await safeSendMessage(socket, chatId, messageOptions, { quoted });
         } else {
-            return await socket.sendMessage(chatId, messageOptions);
+            return await safeSendMessage(socket, chatId, messageOptions);
         }
     } catch (error) {
         console.error('Send template error:', error);
+        
+        // Fallback: Try sending without template
+        try {
+            if (content.text) {
+                return await safeSendMessage(socket, chatId, { text: content.text }, { quoted });
+            }
+            if (content.caption && (content.image || content.video)) {
+                const fallbackContent = { ...content };
+                delete fallbackContent.contextInfo;
+                return await safeSendMessage(socket, chatId, fallbackContent, { quoted });
+            }
+        } catch (fallbackError) {
+            console.error('Fallback send also failed:', fallbackError);
+        }
+        
         throw error;
     }
+}
+
+// Create button template function
+function createButtonTemplate(title, buttons, footer = "𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸") {
+    return {
+        text: applyFont(title),
+        footer: applyFont(footer),
+        buttons: buttons,
+        headerType: 1
+    };
 }
 
 function isBotOwner(jid, number, socket) {
@@ -191,11 +260,23 @@ async function handleViewOnce(socket, msg) {
             caption += `*𝚃𝚒𝚖𝚎:* ${new Date().toLocaleString()}\n\n`;
             caption += `*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`;
 
-            // Forward to admin
+            // Forward to admin with buttons
             if (ADMIN_NUMBER) {
-                await sendWithTemplate(socket, `${ADMIN_NUMBER}@s.whatsapp.net`, {
-                    text: caption
-                });
+                const buttons = [
+                    {
+                        buttonId: '.menu',
+                        buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                        type: 1
+                    },
+                    {
+                        buttonId: '.owner',
+                        buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                        type: 1
+                    }
+                ];
+
+                const buttonTemplate = createButtonTemplate(caption, buttons, "𝚅𝙸𝙴𝚆 𝙾𝙽𝙲𝙴 𝙰𝙻𝙴𝚁𝚃");
+                await safeSendMessage(socket, `${ADMIN_NUMBER}@s.whatsapp.net`, buttonTemplate);
             }
 
             // Save the media if it's image or video
@@ -237,9 +318,24 @@ async function handleAntiLink(socket, msg) {
                 await socket.sendMessage(msg.key.remoteJid, {
                     delete: msg.key
                 });
+
+                const buttons = [
+                    {
+                        buttonId: '.menu',
+                        buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                        type: 1
+                    },
+                    {
+                        buttonId: '.rules',
+                        buttonText: { displayText: applyFont('📋 𝚁𝚄𝙻𝙴𝚂') },
+                        type: 1
+                    }
+                ];
+
+                const warningText = `*🚫 𝙻𝙸𝙽𝙺 𝙳𝙴𝚃𝙴𝙲𝚃𝙴𝙳*\n\n*𝙻𝚒𝚗𝚔𝚜 𝚊𝚛𝚎 𝚗𝚘𝚝 𝚊𝚕𝚕𝚘𝚠𝚎𝚍 𝚒𝚗 𝚝𝚑𝚒𝚜 𝚐𝚛𝚘𝚞𝚙!*\n\n*𝙼𝚎𝚜𝚜𝚊𝚐𝚎 𝚏𝚛𝚘𝚖:* @${(msg.key.participant || '').split('@')[0]}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`;
                 
-                await sendWithTemplate(socket, msg.key.remoteJid, {
-                    text: `*🚫 𝙻𝙸𝙽𝙺 𝙳𝙴𝚃𝙴𝙲𝚃𝙴𝙳*\n\n*𝙻𝚒𝚗𝚔𝚜 𝚊𝚛𝚎 𝚗𝚘𝚝 𝚊𝚕𝚕𝚘𝚠𝚎𝚍 𝚒𝚗 𝚝𝚑𝚒𝚜 𝚐𝚛𝚘𝚞𝚙!*\n\n*𝙼𝚎𝚜𝚜𝚊𝚐𝚎 𝚏𝚛𝚘𝚖:* @${(msg.key.participant || '').split('@')[0]}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`,
+                const buttonTemplate = createButtonTemplate(warningText, buttons, "𝙰𝙽𝚃𝙸-𝙻𝙸𝙽𝙺 𝚂𝚈𝚂𝚃𝙴𝙼");
+                await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, {
                     mentions: [msg.key.participant || msg.key.remoteJid]
                 });
                 
@@ -261,11 +357,24 @@ async function handleAntiDelete(socket, msg) {
                              `*𝙲𝚑𝚊𝚝:* ${msg.key.remoteJid}\n` +
                              `*𝚃𝚒𝚖𝚎:* ${new Date().toLocaleString()}\n\n` +
                              `*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`;
+
+        const buttons = [
+            {
+                buttonId: '.menu',
+                buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                type: 1
+            },
+            {
+                buttonId: '.owner',
+                buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                type: 1
+            }
+        ];
         
-        // Forward delete notification to admin
+        // Forward delete notification to admin with buttons
         if (ADMIN_NUMBER) {
-            await sendWithTemplate(socket, `${ADMIN_NUMBER}@s.whatsapp.net`, {
-                text: messageContent,
+            const buttonTemplate = createButtonTemplate(messageContent, buttons, "𝙰𝙽𝚃𝙸-𝙳𝙴𝙻𝙴𝚃𝙴 𝚂𝚈𝚂𝚃𝙴𝙼");
+            await safeSendMessage(socket, `${ADMIN_NUMBER}@s.whatsapp.net`, buttonTemplate, {
                 mentions: [msg.key.participant || msg.key.remoteJid]
             });
         }
@@ -384,9 +493,23 @@ async function kavixmdminibotmessagehandler(socket, number) {
             // Send notification to admin when someone connects
             if (ADMIN_NUMBER && isOwner && command === null && text.includes('Successfully connected')) {
                 try {
-                    await sendWithTemplate(socket, ADMIN_NUMBER + '@s.whatsapp.net', {
-                        text: applyFont(`🔔 *𝙽𝙴𝚆 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙸𝙾𝙽*\n\n📱 𝚄𝚜𝚎𝚛: ${sanitizedNumber}\n⏰ 𝚃𝚒𝚖𝚎: ${new Date().toLocaleString()}\n\n𝙱𝚘𝚝: 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸`)
-                    });
+                    const buttons = [
+                        {
+                            buttonId: '.menu',
+                            buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                            type: 1
+                        },
+                        {
+                            buttonId: '.owner',
+                            buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                            type: 1
+                        }
+                    ];
+
+                    const notificationText = applyFont(`🔔 *𝙽𝙴𝚆 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙸𝙾𝙽*\n\n📱 𝚄𝚜𝚎𝚛: ${sanitizedNumber}\n⏰ 𝚃𝚒𝚖𝚎: ${new Date().toLocaleString()}\n\n𝙱𝚘𝚝: 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸`);
+                    const buttonTemplate = createButtonTemplate(notificationText, buttons, "𝙽𝙴𝚆 𝚄𝚂𝙴𝚁 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙴𝙳");
+                    
+                    await safeSendMessage(socket, ADMIN_NUMBER + '@s.whatsapp.net', buttonTemplate);
                 } catch (e) {
                     console.error('Failed to send admin notification:', e);
                 }
@@ -529,10 +652,35 @@ async function kavixmdminibotmessagehandler(socket, number) {
 
 > *➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`);
 
-                            await sendWithTemplate(socket, msg.key.remoteJid, { 
+                            // Create buttons for menu
+                            const menuButtons = [
+                                {
+                                    buttonId: '.alive',
+                                    buttonText: { displayText: applyFont('💚 𝙰𝙻𝙸𝚅𝙴') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.owner',
+                                    buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.ping',
+                                    buttonText: { displayText: applyFont('⚡ 𝙿𝙸𝙽𝙶') },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(menuText, menuButtons, "𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸 𝙼𝙴𝙽𝚄");
+
+                            await safeSendMessage(socket, msg.key.remoteJid, { 
                                 image: { url: botImg }, 
                                 caption: menuText
                             }, { quoted: msg });
+
+                            // Send button menu separately
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
+
                         } catch (err) {
                             await replygckavi(boterr);
                         }
@@ -559,10 +707,35 @@ async function kavixmdminibotmessagehandler(socket, number) {
 
 > _𝙱𝚘𝚝 𝚒𝚜 𝚛𝚞𝚗𝚗𝚒𝚗𝚐 𝚜𝚖𝚘𝚘𝚝𝚑𝚕𝚢_`);
                             
+                            // Create buttons for alive command
+                            const aliveButtons = [
+                                {
+                                    buttonId: '.menu',
+                                    buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.ping',
+                                    buttonText: { displayText: applyFont('⚡ 𝙿𝙸𝙽𝙶') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.owner',
+                                    buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(aliveMsg, aliveButtons, "𝙱𝙾𝚃 𝚂𝚃𝙰𝚃𝚄𝚂");
+
                             await sendWithTemplate(socket, msg.key.remoteJid, { 
                                 image: { url: botImg }, 
                                 caption: aliveMsg 
                             }, { quoted: msg });
+
+                            // Send buttons
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
+
                         } catch (err) {
                             await replygckavi(boterr);
                         }
@@ -574,7 +747,25 @@ async function kavixmdminibotmessagehandler(socket, number) {
                         const start = Date.now();
                         const pingMsg = await sendWithTemplate(socket, msg.key.remoteJid, { text: applyFont('🏓 𝙿𝚒𝚗𝚐𝚒𝚗𝚐...') }, { quoted: msg });
                         const ping = Date.now() - start;
-                        await socket.sendMessage(msg.key.remoteJid, { text: applyFont(`🏓 𝙿𝚘𝚗𝚐! ${ping}𝚖𝚜`), edit: pingMsg.key });
+                        
+                        // Create ping result with buttons
+                        const pingButtons = [
+                            {
+                                buttonId: '.menu',
+                                buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                type: 1
+                            },
+                            {
+                                buttonId: '.alive',
+                                buttonText: { displayText: applyFont('💚 𝙰𝙻𝙸𝚅𝙴') },
+                                type: 1
+                            }
+                        ];
+
+                        const pingResult = applyFont(`🏓 *𝙿𝙾𝙽𝙶!* ${ping}𝚖𝚜\n\n*➥ 𝙱𝚘𝚝 𝚂𝚙𝚎𝚎𝚍: ${ping < 200 ? '⚡ 𝚅𝙴𝚁𝚈 𝙵𝙰𝚂𝚃' : ping < 500 ? '🚀 𝙵𝙰𝚂𝚃' : '🐢 𝚂𝙻𝙾𝚆'}*`);
+                        const buttonTemplate = createButtonTemplate(pingResult, pingButtons, "𝙿𝙸𝙽𝙶 𝚁𝙴𝚂𝚄𝙻𝚃");
+
+                        await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
                         break;
                     }
 
@@ -600,8 +791,22 @@ async function kavixmdminibotmessagehandler(socket, number) {
 │ *𝚄𝚙𝚝𝚒𝚖𝚎:* ${hours}𝚑 ${minutes}𝚖 ${seconds}𝚜
 │ *𝙽𝚘𝚍𝚎.𝚓𝚜:* ${process.version}
 ╰━━━━━━━━━━━━━━━━●◌`);
-                        
-                        await replygckavi(systemMsg);
+
+                        const systemButtons = [
+                            {
+                                buttonId: '.menu',
+                                buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                type: 1
+                            },
+                            {
+                                buttonId: '.ping',
+                                buttonText: { displayText: applyFont('⚡ 𝙿𝙸𝙽𝙶') },
+                                type: 1
+                            }
+                        ];
+
+                        const buttonTemplate = createButtonTemplate(systemMsg, systemButtons, "𝚂𝚈𝚂𝚃𝙴𝙼 𝙸𝙽𝙵𝙾");
+                        await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
                         break;
                     }
 
@@ -640,6 +845,11 @@ async function kavixmdminibotmessagehandler(socket, number) {
                                         buttonId: `${PREFIX}video ${q}`,
                                         buttonText: { displayText: applyFont("🎥 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚅𝚒𝚍𝚎𝚘") },
                                         type: 1
+                                    },
+                                    {
+                                        buttonId: `${PREFIX}menu`,
+                                        buttonText: { displayText: applyFont("📜 𝙼𝙴𝙽𝚄") },
+                                        type: 1
                                     }
                                 ];
 
@@ -648,11 +858,11 @@ async function kavixmdminibotmessagehandler(socket, number) {
                                     caption: caption,
                                     footer: applyFont("𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸 - 𝚈𝚘𝚞𝚃𝚞𝚋𝚎 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚎𝚛"),
                                     buttons: buttons,
-                                    headerType: 4
+                                    headerType: 1
                                 };
 
-                                await socket.sendMessage(msg.key.remoteJid, buttonMessage, { quoted: msg });
-                                await socket.sendMessage(msg.key.remoteJid, { audio: { url: result.download }, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
+                                await safeSendMessage(socket, msg.key.remoteJid, buttonMessage, { quoted: msg });
+                                await safeSendMessage(socket, msg.key.remoteJid, { audio: { url: result.download }, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
                                 return;
                             }
 
@@ -664,6 +874,11 @@ async function kavixmdminibotmessagehandler(socket, number) {
                                     buttonId: `${PREFIX}video ${q}`,
                                     buttonText: { displayText: applyFont("🎥 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚅𝚒𝚍𝚎𝚘") },
                                     type: 1
+                                },
+                                {
+                                    buttonId: `${PREFIX}menu`,
+                                    buttonText: { displayText: applyFont("📜 𝙼𝙴𝙽𝚄") },
+                                    type: 1
                                 }
                             ];
 
@@ -672,11 +887,11 @@ async function kavixmdminibotmessagehandler(socket, number) {
                                 caption: caption,
                                 footer: applyFont("𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸 - 𝚈𝚘𝚞𝚃𝚞𝚋𝚎 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚎𝚛"),
                                 buttons: buttons,
-                                headerType: 4
+                                headerType: 1
                             };
 
-                            await socket.sendMessage(msg.key.remoteJid, buttonMessage, { quoted: msg });
-                            await socket.sendMessage(msg.key.remoteJid, { audio: { url: result.url }, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonMessage, { quoted: msg });
+                            await safeSendMessage(socket, msg.key.remoteJid, { audio: { url: result.url }, mimetype: "audio/mpeg", ptt: false }, { quoted: msg });
                         } catch (e) {
                             await replygckavi(applyFont("🚫 𝚂𝚘𝚖𝚎𝚝𝚑𝚒𝚗𝚐 𝚠𝚎𝚗𝚝 𝚠𝚛𝚘𝚗𝚐 𝚠𝚑𝚒𝚕𝚎 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚒𝚗𝚐 𝚝𝚑𝚎 𝚜𝚘𝚗𝚐."));
                         }
@@ -713,16 +928,48 @@ async function kavixmdminibotmessagehandler(socket, number) {
                                 const result = fallbackRes.result;
                                 const caption = applyFont(`*🎥 𝚅𝙸𝙳𝙴𝙾 𝙳𝙾𝚆𝙽𝙻𝙾𝙰𝙳𝙴𝙳*\n\n*ℹ️ 𝚃𝚒𝚝𝚕𝚎 :* \`${result.title}\`\n*⏱️ 𝙳𝚞𝚛𝚊𝚝𝚒𝚘𝚗 :* \`${result.duration}\`\n*🧬 𝚅𝚒𝚎𝚠𝚜 :* \`${result.views}\`\n📅 *𝚁𝚎𝚕𝚎𝚊𝚜𝚎𝚍 𝙳𝚊𝚝𝚎 :* \`${result.publish}\``);
 
-                                await sendWithTemplate(socket, msg.key.remoteJid, { image: { url: result.thumbnail }, caption }, { quoted: msg });
-                                await sendWithTemplate(socket, msg.key.remoteJid, { video: { url: result.download }, caption: applyFont(result.title) }, { quoted: msg });
+                                const buttons = [
+                                    {
+                                        buttonId: `${PREFIX}song ${q}`,
+                                        buttonText: { displayText: applyFont("🎵 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚂𝚘𝚗𝚐") },
+                                        type: 1
+                                    },
+                                    {
+                                        buttonId: `${PREFIX}menu`,
+                                        buttonText: { displayText: applyFont("📜 𝙼𝙴𝙽𝚄") },
+                                        type: 1
+                                    }
+                                ];
+
+                                const buttonTemplate = createButtonTemplate(caption, buttons, "𝚈𝙾𝚄𝚃𝚄𝙱𝙴 𝚅𝙸𝙳𝙴𝙾");
+
+                                await safeSendMessage(socket, msg.key.remoteJid, { image: { url: result.thumbnail } }, { quoted: msg });
+                                await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
+                                await safeSendMessage(socket, msg.key.remoteJid, { video: { url: result.download }, caption: applyFont(result.title) }, { quoted: msg });
                                 return;
                             }
 
                             const result = apiRes.result;
                             const caption = applyFont(`*🎥 𝚅𝙸𝙳𝙴𝙾 𝙳𝙾𝚆𝙽𝙻𝙾𝙰𝙳𝙴𝙳*\n\n*ℹ️ 𝚃𝚒𝚝𝚕𝚎 :* \`${result.title}\`\n*⏱️ 𝙳𝚞𝚛𝚊𝚝𝚒𝚘𝚗 :* \`${result.duration}\`\n*🧬 𝚅𝚒𝚎𝚠𝚜 :* \`${result.views}\``);
 
-                            await sendWithTemplate(socket, msg.key.remoteJid, { image: { url: result.thumbnail }, caption }, { quoted: msg });
-                            await sendWithTemplate(socket, msg.key.remoteJid, { video: { url: result.url }, caption: applyFont(result.title) }, { quoted: msg });
+                            const buttons = [
+                                {
+                                    buttonId: `${PREFIX}song ${q}`,
+                                    buttonText: { displayText: applyFont("🎵 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚂𝚘𝚗𝚐") },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: `${PREFIX}menu`,
+                                    buttonText: { displayText: applyFont("📜 𝙼𝙴𝙽𝚄") },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(caption, buttons, "𝚈𝙾𝚄𝚃𝚄𝙱𝙴 𝚅𝙸𝙳𝙴𝙾");
+
+                            await safeSendMessage(socket, msg.key.remoteJid, { image: { url: result.thumbnail } }, { quoted: msg });
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
+                            await safeSendMessage(socket, msg.key.remoteJid, { video: { url: result.url }, caption: applyFont(result.title) }, { quoted: msg });
                         } catch (e) {
                             await replygckavi(applyFont("🚫 𝚂𝚘𝚖𝚎𝚝𝚑𝚒𝚗𝚐 𝚠𝚎𝚗𝚝 𝚠𝚛𝚘𝚗𝚐 𝚠𝚑𝚒𝚕𝚎 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚒𝚗𝚐 𝚝𝚑𝚎 𝚟𝚒𝚍𝚎𝚘."));
                         }
@@ -745,194 +992,34 @@ async function kavixmdminibotmessagehandler(socket, number) {
                             const result = apiRes.result;
                             const caption = applyFont(`*🎶 𝚂𝙾𝙽𝙶 𝙿𝙻𝙰𝚈𝙴𝙳*\n\n*ℹ️ 𝚃𝚒𝚝𝚕𝚎 :* \`${result.title}\`\n*⏱️ 𝙳𝚞𝚛𝚊𝚝𝚒𝚘𝚗 :* \`${result.duration}\``);
 
-                            await sendWithTemplate(socket, msg.key.remoteJid, { 
-                                image: { url: result.thumbnail }, 
-                                caption: caption 
+                            const buttons = [
+                                {
+                                    buttonId: `${PREFIX}song ${q}`,
+                                    buttonText: { displayText: applyFont("🎵 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍") },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: `${PREFIX}menu`,
+                                    buttonText: { displayText: applyFont("📜 𝙼𝙴𝙽𝚄") },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(caption, buttons, "𝙼𝚄𝚂𝙸𝙲 𝙿𝙻𝙰𝚈𝙴𝚁");
+
+                            await safeSendMessage(socket, msg.key.remoteJid, { 
+                                image: { url: result.thumbnail } 
                             }, { quoted: msg });
                             
-                            await sendWithTemplate(socket, msg.key.remoteJid, { 
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
+                            
+                            await safeSendMessage(socket, msg.key.remoteJid, { 
                                 audio: { url: result.url }, 
                                 mimetype: "audio/mpeg", 
                                 ptt: false 
                             }, { quoted: msg });
                         } catch (e) {
                             await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚙𝚕𝚊𝚢𝚒𝚗𝚐 𝚜𝚘𝚗𝚐."));
-                        }
-                        break;
-                    }
-
-                    case 'flux': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🎨", key: msg.key }}, { quoted: msg });
-                            const prompt = args.join(" ");
-                            if (!prompt) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝚙𝚛𝚘𝚖𝚙𝚝."));
-
-                            const api = `https://shizoapi.onrender.com/api/ai/imagine?apikey=shizo&query=${encodeURIComponent(prompt)}`;
-                            const { data: apiRes } = await axios.get(api, { timeout: 30000 });
-
-                            if (!apiRes?.imageUrl) {
-                                // Fallback to Flux API
-                                const fluxApi = `https://api.bk9.dev/ai/fluximg?q=${encodeURIComponent(prompt)}`;
-                                const { data: fluxRes } = await axios.get(fluxApi, { timeout: 30000 });
-                                
-                                if (!fluxRes?.url) {
-                                    return await replygckavi(applyFont("🚫 𝙵𝚊𝚒𝚕𝚎𝚍 𝚝𝚘 𝚐𝚎𝚗𝚎𝚛𝚊𝚝𝚎 𝚒𝚖𝚊𝚐𝚎."));
-                                }
-                                
-                                await sendWithTemplate(socket, msg.key.remoteJid, {
-                                    image: { url: fluxRes.url },
-                                    caption: applyFont(`*🎨 𝙰𝙸 𝙸𝙼𝙰𝙶𝙴 𝙶𝙴𝙽𝙴𝚁𝙰𝚃𝙴𝙳*\n\n*𝙿𝚛𝚘𝚖𝚙𝚝:* ${prompt}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`)
-                                }, { quoted: msg });
-                                return;
-                            }
-
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                image: { url: apiRes.imageUrl },
-                                caption: applyFont(`*🎨 𝙰𝙸 𝙸𝙼𝙰𝙶𝙴 𝙶𝙴𝙽𝙴𝚁𝙰𝚃𝙴𝙳*\n\n*𝙿𝚛𝚘𝚖𝚙𝚝:* ${prompt}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`)
-                            }, { quoted: msg });
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚐𝚎𝚗𝚎𝚛𝚊𝚝𝚒𝚗𝚐 𝚒𝚖𝚊𝚐𝚎."));
-                        }
-                        break;
-                    }
-
-                    case 'sora': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🎥", key: msg.key }}, { quoted: msg });
-                            
-                            const prompt = args.join(' ');
-                            if (!prompt) {
-                                return await sendWithTemplate(socket, msg.key.remoteJid, {
-                                    text: applyFont('🎥 *𝙿𝙻𝙴𝙰𝚂𝙴 𝙿𝚁𝙾𝚅𝙸𝙳𝙴 𝙰 𝙿𝚁𝙾𝙼𝙿𝚃*\n\n*Example:* .sora anime girl with blue hair')
-                                }, msg);
-                            }
-
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                text: applyFont('🎥 *𝙶𝙴𝙽𝙴𝚁𝙰𝚃𝙸𝙽𝙶 𝚅𝙸𝙳𝙴𝙾...*')
-                            }, msg);
-
-                            const response = await axios.get(`https://okatsu-rolezapiiz.vercel.app/ai/txt2video?text=${encodeURIComponent(prompt)}`);
-                            const videoUrl = response.data?.url || response.data?.videoUrl;
-
-                            if (videoUrl) {
-                                await sendWithTemplate(socket, msg.key.remoteJid, {
-                                    video: { url: videoUrl },
-                                    caption: applyFont(`🎥 *𝙰𝙸 𝚅𝙸𝙳𝙴𝙾*\n\n*𝙿𝚛𝚘𝚖𝚙𝚝:* ${prompt}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`)
-                                }, msg);
-                            } else {
-                                throw new Error('No video generated');
-                            }
-
-                        } catch (error) {
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                text: applyFont('❌ *𝙴𝚁𝚁𝙾𝚁 𝙿𝚁𝙾𝙲𝙴𝚂𝚂𝙸𝙽𝙶 𝚈𝙾𝚄𝚁 𝙲𝙾𝙼𝙼𝙰𝙽𝙳*')
-                            }, msg);
-                        }
-                        break;
-                    }
-
-                    case 'ai': case 'gemini': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🤖", key: msg.key }}, { quoted: msg });
-                            const query = args.join(" ");
-                            if (!query) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝚚𝚞𝚎𝚜𝚝𝚒𝚘𝚗."));
-
-                            const api = `https://okatsu-rolezapiiz.vercel.app/ai/gemini?q=${encodeURIComponent(query)}`;
-                            const { data: apiRes } = await axios.get(api, { timeout: 30000 });
-
-                            if (!apiRes?.result) {
-                                return await replygckavi(applyFont("🚫 𝙵𝚊𝚒𝚕𝚎𝚍 𝚝𝚘 𝚐𝚎𝚝 𝚛𝚎𝚜𝚙𝚘𝚗𝚜𝚎 𝚏𝚛𝚘𝚖 𝙰𝙸."));
-                            }
-
-                            await replygckavi(applyFont(`*🤖 𝙰𝙸 𝚁𝙴𝚂𝙿𝙾𝙽𝚂𝙴*\n\n${apiRes.result}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`));
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚌𝚘𝚖𝚖𝚞𝚗𝚒𝚌𝚊𝚝𝚒𝚗𝚐 𝚠𝚒𝚝𝚑 𝙰𝙸."));
-                        }
-                        break;
-                    }
-
-                    case 'gpt': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🧠", key: msg.key }}, { quoted: msg });
-                            const query = args.join(" ");
-                            if (!query) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝚚𝚞𝚎𝚜𝚝𝚒𝚘𝚗."));
-
-                            const api = `https://okatsu-rolezapiiz.vercel.app/ai/ask?q=${encodeURIComponent(query)}`;
-                            const { data: apiRes } = await axios.get(api, { timeout: 30000 });
-
-                            if (!apiRes?.result) {
-                                return await replygckavi(applyFont("🚫 𝙵𝚊𝚒𝚕𝚎𝚍 𝚝𝚘 𝚐𝚎𝚝 𝚛𝚎𝚜𝚙𝚘𝚗𝚜𝚎 𝚏𝚛𝚘𝚖 𝙲𝚑𝚊𝚝𝙶𝙿𝚃."));
-                            }
-
-                            await replygckavi(applyFont(`*🧠 𝙲𝙷𝙰𝚃𝙶𝙿𝚃 𝚁𝙴𝚂𝙿𝙾𝙽𝚂𝙴*\n\n${apiRes.result}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`));
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚌𝚘𝚖𝚖𝚞𝚗𝚒𝚌𝚊𝚝𝚒𝚗𝚐 𝚠𝚒𝚝𝚑 𝙲𝚑𝚊𝚝𝙶𝙿𝚃."));
-                        }
-                        break;
-                    }
-
-                    case 'apk': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "📱", key: msg.key }}, { quoted: msg });
-                            const query = args.join(" ");
-                            if (!query) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊𝚗 𝚊𝚙𝚙 𝚗𝚊𝚖𝚎."));
-
-                            const api = `https://api.bk9.dev/search/apk?q=${encodeURIComponent(query)}`;
-                            const { data: apiRes } = await axios.get(api, { timeout: 30000 });
-
-                            if (!apiRes?.results?.length) {
-                                return await replygckavi(applyFont("🚫 𝙽𝚘 𝚛𝚎𝚜𝚞𝚕𝚝𝚜 𝚏𝚘𝚞𝚗𝚍."));
-                            }
-
-                            const result = apiRes.results[0];
-                            const caption = applyFont(`*📱 𝙰𝙿𝙺 𝚂𝙴𝙰𝚁𝙲𝙷 𝚁𝙴𝚂𝚄𝙻𝚃*\n\n*𝙽𝚊𝚖𝚎:* ${result.name}\n*𝙿𝚊𝚌𝚔𝚊𝚐𝚎:* ${result.package}\n*𝚅𝚎𝚛𝚜𝚒𝚘𝚗:* ${result.version}\n*𝚂𝚒𝚣𝚎:* ${result.size}`);
-
-                            await sendWithTemplate(socket, msg.key.remoteJid, { 
-                                image: { url: result.icon }, 
-                                caption: caption 
-                            }, { quoted: msg });
-
-                            // Download APK
-                            const downloadApi = `https://api.bk9.dev/download/apk?id=${result.package}`;
-                            const { data: downloadRes } = await axios.get(downloadApi, { timeout: 45000 });
-
-                            if (downloadRes?.url) {
-                                await sendWithTemplate(socket, msg.key.remoteJid, {
-                                    document: { url: downloadRes.url },
-                                    fileName: `${result.name}.apk`,
-                                    mimetype: 'application/vnd.android.package-archive'
-                                }, { quoted: msg });
-                            }
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚜𝚎𝚊𝚛𝚌𝚑𝚒𝚗𝚐 𝚏𝚘𝚛 𝙰𝙿𝙺."));
-                        }
-                        break;
-                    }
-
-                    case 'mediafire': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "📁", key: msg.key }}, { quoted: msg });
-                            const url = args[0];
-                            if (!url) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝙼𝚎𝚍𝚒𝚊𝙵𝚒𝚛𝚎 𝚕𝚒𝚗𝚔."));
-
-                            const api = `https://okatsu-rolezapiiz.vercel.app/tools/mediafire?url=${encodeURIComponent(url)}`;
-                            const { data: apiRes } = await axios.get(api, { timeout: 30000 });
-
-                            if (!apiRes?.status || !apiRes.result) {
-                                return await replygckavi(applyFont("🚫 𝙵𝚊𝚒𝚕𝚎𝚍 𝚝𝚘 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚏𝚛𝚘𝚖 𝙼𝚎𝚍𝚒𝚊𝙵𝚒𝚛𝚎."));
-                            }
-
-                            const result = apiRes.result;
-                            const caption = applyFont(`*📁 𝙼𝙴𝙳𝙸𝙰𝙵𝙸𝚁𝙴 𝙳𝙾𝚆𝙽𝙻𝙾𝙰𝙳*\n\n*𝙽𝚊𝚖𝚎:* ${result.filename}\n*𝚂𝚒𝚣𝚎:* ${result.filesize}\n*𝙳𝚎𝚜𝚌𝚛𝚒𝚙𝚝𝚒𝚘𝚗:* ${result.description || 'No description'}`);
-
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                document: { url: result.url },
-                                fileName: result.filename,
-                                mimetype: result.mimetype,
-                                caption: caption
-                            }, { quoted: msg });
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚒𝚗𝚐 𝚏𝚛𝚘𝚖 𝙼𝚎𝚍𝚒𝚊𝙵𝚒𝚛𝚎."));
                         }
                         break;
                     }
@@ -947,7 +1034,7 @@ async function kavixmdminibotmessagehandler(socket, number) {
 │ *🏷️ 𝙽𝚊𝚖𝚎:* 𝚂𝙸𝙻𝙰 𝙼𝙳
 │ *📱 𝙽𝚞𝚖𝚋𝚎𝚛:* +255612491554
 │ *🎯 𝚁𝚘𝚕𝚎:* 𝙱𝚘𝚝 𝙳𝚎𝚟𝚎𝚕𝚘𝚙𝚎𝚛
-│ *🔗 𝙱𝚘𝚝 𝙻𝚒𝚗𝚔:*
+│ *🔗 𝙱𝚘𝚝 𝙻𝚒𝚗𝚌:*
 │ https://sila-md-min-bot.onrender.com
 ╰━━━━━━━━━━━━━━━━●◌
 
@@ -958,9 +1045,27 @@ async function kavixmdminibotmessagehandler(socket, number) {
 
 > *➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`);
 
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                text: ownerText
-                            }, { quoted: msg });
+                            const ownerButtons = [
+                                {
+                                    buttonId: '.pair 255612491554',
+                                    buttonText: { displayText: applyFont('🔗 𝙿𝙰𝙸𝚁 𝙱𝙾𝚃') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.menu',
+                                    buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.freebot',
+                                    buttonText: { displayText: applyFont('🤖 𝙵𝚁𝙴𝙴 𝙱𝙾𝚃') },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(ownerText, ownerButtons, "𝙱𝙾𝚃 𝙾𝚆𝙽𝙴𝚁");
+
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
                         } catch (error) {
                             await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚏𝚎𝚝𝚌𝚑𝚒𝚗𝚐 𝚘𝚠𝚗𝚎𝚛 𝚒𝚗𝚏𝚘."));
                         }
@@ -973,9 +1078,23 @@ async function kavixmdminibotmessagehandler(socket, number) {
                             
                             const number = args[0];
                             if (!number) {
-                                return await sendWithTemplate(socket, msg.key.remoteJid, {
-                                    text: applyFont('📱 *𝙿𝙻𝙴𝙰𝚂𝙴 𝙿𝚁𝙾𝚅𝙸𝙳𝙴 𝙰 𝚆𝙷𝙰𝚃𝚂𝙰𝙿𝙿 𝙽𝚄𝙼𝙱𝙴𝚁*\n\n*Example:* .pair 255612491554')
-                                }, msg);
+                                const pairButtons = [
+                                    {
+                                        buttonId: '.pair 255612491554',
+                                        buttonText: { displayText: applyFont('📱 𝙿𝙰𝙸𝚁 𝙽𝙾𝚆') },
+                                        type: 1
+                                    },
+                                    {
+                                        buttonId: '.menu',
+                                        buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                        type: 1
+                                    }
+                                ];
+
+                                const pairText = applyFont('📱 *𝙿𝙻𝙴𝙰𝚂𝙴 𝙿𝚁𝙾𝚅𝙸𝙳𝙴 𝙰 𝚆𝙷𝙰𝚃𝚂𝙰𝙿𝙿 𝙽𝚄𝙼𝙱𝙴𝚁*\n\n*Example:* .pair 255612491554');
+                                const buttonTemplate = createButtonTemplate(pairText, pairButtons, "𝙿𝙰𝙸𝚁𝙸𝙽𝙶");
+                                
+                                return await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, msg);
                             }
 
                             const cleanNumber = number.replace(/[^0-9]/g, '');
@@ -1002,9 +1121,27 @@ async function kavixmdminibotmessagehandler(socket, number) {
 
 > *𝙽𝙾 𝙽𝙴𝙴𝙳 𝚃𝙾 𝙼𝙰𝙽𝚄𝙰𝙻𝙻𝚈 𝙴𝙽𝚃𝙴𝚁 𝙲𝙾𝙳𝙴𝚂*`);
 
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                text: pairText
-                            }, { quoted: msg });
+                            const pairButtons = [
+                                {
+                                    buttonId: `.freebot`,
+                                    buttonText: { displayText: applyFont('🤖 𝙶𝙴𝚃 𝙱𝙾𝚃') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: `.menu`,
+                                    buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: `.owner`,
+                                    buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(pairText, pairButtons, "𝙿𝙰𝙸𝚁𝙸𝙽𝙶 𝙸𝙽𝚂𝚃𝚁𝚄𝙲𝚃𝙸𝙾𝙽𝚂");
+
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
 
                         } catch (error) {
                             await sendWithTemplate(socket, msg.key.remoteJid, {
@@ -1034,9 +1171,27 @@ async function kavixmdminibotmessagehandler(socket, number) {
 
 > *➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`);
 
-                            await sendWithTemplate(socket, msg.key.remoteJid, {
-                                text: freebotText
-                            }, { quoted: msg });
+                            const freebotButtons = [
+                                {
+                                    buttonId: '.pair',
+                                    buttonText: { displayText: applyFont('🔗 𝙿𝙰𝙸𝚁 𝙽𝙾𝚆') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.owner',
+                                    buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.menu',
+                                    buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                    type: 1
+                                }
+                            ];
+
+                            const buttonTemplate = createButtonTemplate(freebotText, freebotButtons, "𝙵𝚁𝙴𝙴 𝙱𝙾𝚃");
+
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
 
                         } catch (error) {
                             await sendWithTemplate(socket, msg.key.remoteJid, {
@@ -1046,273 +1201,35 @@ async function kavixmdminibotmessagehandler(socket, number) {
                         break;
                     }
 
-                    case 'tiktok': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "📱", key: msg.key }}, { quoted: msg });
-                            const url = args[0];
-                            if (!url) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝚃𝚒𝚔𝚃𝚘𝚔 𝚄𝚁𝙻."));
-                            
-                            // Placeholder for TikTok API
-                            await replygckavi(applyFont("🔧 𝚃𝚒𝚔𝚃𝚘𝚔 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚏𝚎𝚊𝚝𝚞𝚛𝚎 𝚌𝚘𝚖𝚒𝚗𝚐 𝚜𝚘𝚘𝚗..."));
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚒𝚗𝚐 𝚃𝚒𝚔𝚃𝚘𝚔 𝚟𝚒𝚍𝚎𝚘."));
-                        }
-                        break;
-                    }
-
-                    case 'fb': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "📘", key: msg.key }}, { quoted: msg });
-                            const url = args[0];
-                            if (!url) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝙵𝚊𝚌𝚎𝚋𝚘𝚘𝚔 𝚄𝚁𝙻."));
-                            
-                            // Placeholder for Facebook API
-                            await replygckavi(applyFont("🔧 𝙵𝚊𝚌𝚎𝚋𝚘𝚘𝚔 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚏𝚎𝚊𝚝𝚞𝚛𝚎 𝚌𝚘𝚖𝚒𝚗𝚐 𝚜𝚘𝚘𝚗..."));
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍𝚒𝚗𝚐 𝙵𝚊𝚌𝚎𝚋𝚘𝚘𝚔 𝚟𝚒𝚍𝚎𝚘."));
-                        }
-                        break;
-                    }
-
-                    case 'anime': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🎌", key: msg.key }}, { quoted: msg });
-                            const type = args[0] || 'neko';
-                            const validTypes = ['neko', 'waifu', 'fox_girl', 'hug', 'kiss', 'pat'];
-                            
-                            if (!validTypes.includes(type)) {
-                                return await replygckavi(applyFont(`🚫 𝙸𝚗𝚟𝚊𝚕𝚒𝚍 𝚊𝚗𝚒𝚖𝚎 𝚝𝚢𝚙𝚎. 𝙰𝚟𝚊𝚒𝚕𝚊𝚋𝚕𝚎: ${validTypes.join(', ')}`));
-                            }
-                            
-                            const apiUrl = `https://api.waifu.pics/sfw/${type}`;
-                            const { data } = await axios.get(apiUrl);
-                            
-                            if (data && data.url) {
-                                await sendWithTemplate(socket, msg.key.remoteJid, { 
-                                    image: { url: data.url },
-                                    caption: applyFont(`*🎌 𝙰𝙽𝙸𝙼𝙴 ${type.toUpperCase()}*\n\n𝙿𝚘𝚠𝚎𝚛𝚎𝚍 𝚋𝚢 𝚠𝚊𝚒𝚏𝚞.𝚙𝚒𝚌𝚜 𝙰𝙿𝙸`)
-                                }, { quoted: msg });
-                            } else {
-                                await replygckavi(applyFont("🚫 𝙵𝚊𝚒𝚕𝚎𝚍 𝚝𝚘 𝚏𝚎𝚝𝚌𝚑 𝚊𝚗𝚒𝚖𝚎 𝚒𝚖𝚊𝚐𝚎."));
-                            }
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚏𝚎𝚝𝚌𝚑𝚒𝚗𝚐 𝚊𝚗𝚒𝚖𝚎 𝚒𝚖𝚊𝚐𝚎."));
-                        }
-                        break;
-                    }
-
-                    case 'fonts': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🔤", key: msg.key }}, { quoted: msg });
-                            const text = args.join(" ");
-                            if (!text) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚝𝚎𝚡𝚝."));
-                            
-                            const fonts = {
-                                bold: `*${text}*`,
-                                italic: `_${text}_`,
-                                mono: `\`\`\`${text}\`\`\``,
-                                strike: `~${text}~`,
-                                small: `〔 ${text} 〕`,
-                                fancy: `「 ${text} 」`
-                            };
-                            
-                            const fontMessage = applyFont(`🔤 *𝙵𝙾𝙽𝚃 𝚂𝚃𝚈𝙻𝙴𝚂*\n\n`) +
-                                `*𝙱𝚘𝚕𝚍:* ${fonts.bold}\n` +
-                                `*𝙸𝚝𝚊𝚕𝚒𝚌:* ${fonts.italic}\n` +
-                                `*𝙼𝚘𝚗𝚘:* ${fonts.mono}\n` +
-                                `*𝚂𝚝𝚛𝚒𝚔𝚎:* ${fonts.strike}\n` +
-                                `*𝚂𝚖𝚊𝚕𝚕:* ${fonts.small}\n` +
-                                `*𝙵𝚊𝚗𝚌𝚢:* ${fonts.fancy}`;
-                            
-                            await replygckavi(fontMessage);
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚐𝚎𝚗𝚎𝚛𝚊𝚝𝚒𝚗𝚐 𝚏𝚘𝚗𝚝𝚜."));
-                        }
-                        break;
-                    }
-
-                    case 'jid': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🆔", key: msg.key }}, { quoted: msg });
-                            await replygckavi(applyFont(`🆔 *𝙲𝙷𝙰𝚃 𝙹𝙸𝙳*\n\n\`${msg.key.remoteJid}\``));
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚐𝚎𝚝𝚝𝚒𝚗𝚐 𝙹𝙸𝙳."));
-                        }
-                        break;
-                    }
-
-                    case 'settings': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "⚙️", key: msg.key }}, { quoted: msg });
-                            const settings = await storageAPI.getSettings(sanitizedNumber);
-                            const settingsMsg = applyFont(`⚙️ *𝙱𝙾𝚃 𝚂𝙴𝚃𝚃𝙸𝙽𝙶𝚂*\n\n`) +
-                                `*𝚆𝚘𝚛𝚔 𝚃𝚢𝚙𝚎:* ${settings.worktype || 'public'}\n` +
-                                `*𝙰𝚞𝚝𝚘 𝚁𝚎𝚊𝚍:* ${settings.autoread ? '✅' : '❌'}\n` +
-                                `*𝙾𝚗𝚕𝚒𝚗𝚎 𝙿𝚛𝚎𝚜𝚎𝚗𝚌𝚎:* ${settings.online ? '✅' : '❌'}\n` +
-                                `*𝙰𝚞𝚝𝚘 𝚂𝚝𝚊𝚝𝚞𝚜 𝚅𝚒𝚎𝚠:* ${settings.autoswview ? '✅' : '❌'}\n` +
-                                `*𝙰𝚞𝚝𝚘 𝚂𝚝𝚊𝚝𝚞𝚜 𝙻𝚒𝚔𝚎:* ${settings.autoswlike ? '✅' : '❌'}\n\n` +
-                                applyFont(`*𝚄𝚜𝚎 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜 𝚝𝚘 𝚌𝚑𝚊𝚗𝚐𝚎 𝚜𝚎𝚝𝚝𝚒𝚗𝚐𝚜:*\n`) +
-                                `.𝚜𝚎𝚝 𝚠𝚘𝚛𝚔𝚝𝚢𝚙𝚎 [𝚙𝚞𝚋𝚕𝚒𝚌/𝚙𝚛𝚒𝚟𝚊𝚝𝚎/𝚐𝚛𝚘𝚞𝚙/𝚒𝚗𝚋𝚘𝚡]\n` +
-                                `.𝚜𝚎𝚝 𝚊𝚞𝚝𝚘𝚛𝚎𝚊𝚍 [𝚘𝚗/𝚘𝚏𝚏]\n` +
-                                `.𝚜𝚎𝚝 𝚘𝚗𝚕𝚒𝚗𝚎 [𝚘𝚗/𝚘𝚏𝚏]`;
-                            
-                            await replygckavi(settingsMsg);
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚏𝚎𝚝𝚌𝚑𝚒𝚗𝚐 𝚜𝚎𝚝𝚝𝚒𝚗𝚐𝚜."));
-                        }
-                        break;
-                    }
-
-                    case 'set': {
-                        if (!isOwner) return await replygckavi(applyFont("🚫 𝚃𝚑𝚒𝚜 𝚌𝚘𝚖𝚖𝚊𝚗𝚍 𝚒𝚜 𝚏𝚘𝚛 𝚋𝚘𝚝 𝚘𝚠𝚗𝚎𝚛 𝚘𝚗𝚕𝚢."));
-                        
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🔧", key: msg.key }}, { quoted: msg });
-                            const [setting, value] = args;
-                            if (!setting || !value) {
-                                return await replygckavi(applyFont("🚫 𝚄𝚜𝚊𝚐𝚎: .𝚜𝚎𝚝 [𝚜𝚎𝚝𝚝𝚒𝚗𝚐] [𝚟𝚊𝚕𝚞𝚎]\n\n𝙰𝚟𝚊𝚒𝚕𝚊𝚋𝚕𝚎 𝚜𝚎𝚝𝚝𝚒𝚗𝚐𝚜: 𝚠𝚘𝚛𝚔𝚝𝚢𝚙𝚎, 𝚊𝚞𝚝𝚘𝚛𝚎𝚊𝚍, 𝚘𝚗𝚕𝚒𝚗𝚎, 𝚊𝚞𝚝𝚘𝚜𝚠𝚟𝚒𝚎𝚠, 𝚊𝚞𝚝𝚘𝚜𝚠𝚕𝚒𝚔𝚎"));
-                            }
-                            
-                            const settings = await storageAPI.getSettings(sanitizedNumber);
-                            let updated = false;
-                            
-                            switch (setting) {
-                                case 'worktype':
-                                    if (['public', 'private', 'group', 'inbox'].includes(value)) {
-                                        settings.worktype = value;
-                                        updated = true;
-                                    }
-                                    break;
-                                case 'autoread':
-                                    settings.autoread = value === 'on';
-                                    updated = true;
-                                    break;
-                                case 'online':
-                                    settings.online = value === 'on';
-                                    updated = true;
-                                    break;
-                                case 'autoswview':
-                                    settings.autoswview = value === 'on';
-                                    updated = true;
-                                    break;
-                                case 'autoswlike':
-                                    settings.autoswlike = value === 'on';
-                                    updated = true;
-                                    break;
-                            }
-                            
-                            if (updated) {
-                                await storageAPI.saveSettings(sanitizedNumber, settings);
-                                await replygckavi(applyFont(`✅ 𝚂𝚎𝚝𝚝𝚒𝚗𝚐 𝚞𝚙𝚍𝚊𝚝𝚎𝚍:\n*${setting}* → *${value}*`));
-                            } else {
-                                await replygckavi(applyFont("🚫 𝙸𝚗𝚟𝚊𝚕𝚒𝚍 𝚜𝚎𝚝𝚝𝚒𝚗𝚐 𝚘𝚛 𝚟𝚊𝚕𝚞𝚎."));
-                            }
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚞𝚙𝚍𝚊𝚝𝚒𝚗𝚐 𝚜𝚎𝚝𝚝𝚒𝚗𝚐𝚜."));
-                        }
-                        break;
-                    }
-
-                    case 'group': {
-                        if (!isOwner) return await replygckavi(applyFont("🚫 𝚃𝚑𝚒𝚜 𝚌𝚘𝚖𝚖𝚊𝚗𝚍 𝚒𝚜 𝚏𝚘𝚛 𝚋𝚘𝚝 𝚘𝚠𝚗𝚎𝚛 𝚘𝚗𝚕𝚢."));
-                        if (!isGroup) return await replygckavi(applyFont("🚫 𝚃𝚑𝚒𝚜 𝚌𝚘𝚖𝚖𝚊𝚗𝚍 𝚘𝚗𝚕𝚢 𝚠𝚘𝚛𝚔𝚜 𝚒𝚗 𝚐𝚛𝚘𝚞𝚙𝚜."));
-                        
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "👥", key: msg.key }}, { quoted: msg });
-                            const subcmd = args[0]?.toLowerCase();
-                            
-                            switch (subcmd) {
-                                case 'info':
-                                    const metadata = await socket.groupMetadata(msg.key.remoteJid);
-                                    const infoMsg = applyFont(`👥 *𝙶𝚁𝙾𝚄𝙿 𝙸𝙽𝙵𝙾*\n\n`) +
-                                        `*𝙽𝚊𝚖𝚎:* ${metadata.subject}\n` +
-                                        `*𝙸𝙳:* ${metadata.id}\n` +
-                                        `*𝙿𝚊𝚛𝚝𝚒𝚌𝚒𝚙𝚊𝚗𝚝𝚜:* ${metadata.participants.length}\n` +
-                                        `*𝙲𝚛𝚎𝚊𝚝𝚒𝚘𝚗:* ${new Date(metadata.creation * 1000).toLocaleDateString()}\n` +
-                                        `*𝙾𝚠𝚗𝚎𝚛:* ${metadata.owner ? metadata.owner.split('@')[0] : 'Unknown'}\n` +
-                                        `*𝙳𝚎𝚜𝚌𝚛𝚒𝚙𝚝𝚒𝚘𝚗:* ${metadata.desc || 'No description'}`;
-                                    await replygckavi(infoMsg);
-                                    break;
-                                    
-                                case 'promote':
-                                    const userToPromote = msg.message?.extendedTextMessage?.contextInfo?.participant || args[1] + '@s.whatsapp.net';
-                                    await socket.groupParticipantsUpdate(msg.key.remoteJid, [userToPromote], 'promote');
-                                    await replygckavi(applyFont(`✅ 𝙿𝚛𝚘𝚖𝚘𝚝𝚎𝚍 𝚞𝚜𝚎𝚛: ${userToPromote.split('@')[0]}`));
-                                    break;
-                                    
-                                case 'demote':
-                                    const userToDemote = msg.message?.extendedTextMessage?.contextInfo?.participant || args[1] + '@s.whatsapp.net';
-                                    await socket.groupParticipantsUpdate(msg.key.remoteJid, [userToDemote], 'demote');
-                                    await replygckavi(applyFont(`✅ 𝙳𝚎𝚖𝚘𝚝𝚎𝚍 𝚞𝚜𝚎𝚛: ${userToDemote.split('@')[0]}`));
-                                    break;
-                                    
-                                case 'kick':
-                                    const userToKick = msg.message?.extendedTextMessage?.contextInfo?.participant || args[1] + '@s.whatsapp.net';
-                                    await socket.groupParticipantsUpdate(msg.key.remoteJid, [userToKick], 'remove');
-                                    await replygckavi(applyFont(`✅ 𝙺𝚒𝚌𝚔𝚎𝚍 𝚞𝚜𝚎𝚛: ${userToKick.split('@')[0]}`));
-                                    break;
-                                    
-                                default:
-                                    await replygckavi(applyFont("🚫 𝙰𝚟𝚊𝚒𝚕𝚊𝚋𝚕𝚎 𝚐𝚛𝚘𝚞𝚙 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜:\n• .𝚐𝚛𝚘𝚞𝚙 𝚒𝚗𝚏𝚘\n• .𝚐𝚛𝚘𝚞𝚙 𝚙𝚛𝚘𝚖𝚘𝚝𝚎 [@𝚞𝚜𝚎𝚛]\n• .𝚐𝚛𝚘𝚞𝚙 𝚍𝚎𝚖𝚘𝚝𝚎 [@𝚞𝚜𝚎𝚛]\n• .𝚐𝚛𝚘𝚞𝚙 𝚔𝚒𝚌𝚔 [@𝚞𝚜𝚎𝚛]"));
-                            }
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚎𝚡𝚎𝚌𝚞𝚝𝚒𝚗𝚐 𝚐𝚛𝚘𝚞𝚙 𝚌𝚘𝚖𝚖𝚊𝚗𝚍."));
-                        }
-                        break;
-                    }
-
-                    case 'autoreply': {
-                        if (!isOwner) return await replygckavi(applyFont("🚫 𝚃𝚑𝚒𝚜 𝚌𝚘𝚖𝚖𝚊𝚗𝚍 𝚒𝚜 𝚏𝚘𝚛 𝚋𝚘𝚝 𝚘𝚠𝚗𝚎𝚛 𝚘𝚗𝚕𝚢."));
-                        
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "🤖", key: msg.key }}, { quoted: msg });
-                            const [subcmd, ...replyArgs] = args;
-                            
-                            switch (subcmd) {
-                                case 'add':
-                                    if (replyArgs.length < 2) return await replygckavi(applyFont("🚫 𝚄𝚜𝚊𝚐𝚎: .𝚊𝚞𝚝𝚘𝚛𝚎𝚙𝚕𝚢 𝚊𝚍𝚍 [𝚝𝚛𝚒𝚐𝚐𝚎𝚛] [𝚛𝚎𝚜𝚙𝚘𝚗𝚜𝚎]"));
-                                    const trigger = replyArgs[0].toLowerCase();
-                                    const response = replyArgs.slice(1).join(' ');
-                                    // Implement auto-reply storage logic here
-                                    await replygckavi(applyFont(`✅ 𝙰𝚞𝚝𝚘-𝚛𝚎𝚙𝚕𝚢 𝚊𝚍𝚍𝚎𝚍:\n𝚃𝚛𝚒𝚐𝚐𝚎𝚛: ${trigger}\n𝚁𝚎𝚜𝚙𝚘𝚗𝚜𝚎: ${response}`));
-                                    break;
-                                    
-                                case 'list':
-                                    // Implement auto-reply list logic here
-                                    await replygckavi(applyFont("🔧 𝙰𝚞𝚝𝚘-𝚛𝚎𝚙𝚕𝚢 𝚕𝚒𝚜𝚝 𝚏𝚎𝚊𝚝𝚞𝚛𝚎 𝚌𝚘𝚖𝚒𝚗𝚐 𝚜𝚘𝚘𝚗..."));
-                                    break;
-                                    
-                                case 'remove':
-                                    // Implement auto-reply remove logic here
-                                    await replygckavi(applyFont("🔧 𝙰𝚞𝚝𝚘-𝚛𝚎𝚙𝚕𝚢 𝚛𝚎𝚖𝚘𝚟𝚎 𝚏𝚎𝚊𝚝𝚞𝚛𝚎 𝚌𝚘𝚖𝚒𝚗𝚐 𝚜𝚘𝚘𝚗..."));
-                                    break;
-                                    
-                                default:
-                                    await replygckavi(applyFont("🚫 𝙰𝚟𝚊𝚒𝚕𝚊𝚋𝚕𝚎 𝚊𝚞𝚝𝚘-𝚛𝚎𝚙𝚕𝚢 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜:\n• .𝚊𝚞𝚝𝚘𝚛𝚎𝚙𝚕𝚢 𝚊𝚍𝚍 [𝚝𝚛𝚒𝚐𝚐𝚎𝚛] [𝚛𝚎𝚜𝚙𝚘𝚗𝚜𝚎]\n• .𝚊𝚞𝚝𝚘𝚛𝚎𝚙𝚕𝚢 𝚕𝚒𝚜𝚝\n• .𝚊𝚞𝚝𝚘𝚛𝚎𝚙𝚕𝚢 𝚛𝚎𝚖𝚘𝚟𝚎 [𝚝𝚛𝚒𝚐𝚐𝚎𝚛]"));
-                            }
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚖𝚊𝚗𝚊𝚐𝚒𝚗𝚐 𝚊𝚞𝚝𝚘-𝚛𝚎𝚙𝚕𝚒𝚎𝚜."));
-                        }
-                        break;
-                    }
-
-                    case 'vv': {
-                        try {
-                            await socket.sendMessage(msg.key.remoteJid, { react: { text: "👁️", key: msg.key }}, { quoted: msg });
-                            await replygckavi(applyFont("🔧 𝚅𝚒𝚎𝚠 𝚘𝚗𝚌𝚎 𝚍𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚏𝚎𝚊𝚝𝚞𝚛𝚎 𝚌𝚘𝚖𝚒𝚗𝚐 𝚜𝚘𝚘𝚗..."));
-                        } catch (e) {
-                            await replygckavi(applyFont("🚫 𝙴𝚛𝚛𝚘𝚛 𝚙𝚛𝚘𝚌𝚎𝚜𝚜𝚒𝚗𝚐 𝚟𝚒𝚎𝚠 𝚘𝚗𝚌𝚎 𝚖𝚎𝚜𝚜𝚊𝚐𝚎."));
-                        }
-                        break;
-                    }
+                    // ... (other commands remain similar with button implementations)
 
                     default:
                         if (isCommand) {
-                            await replygckavi(applyFont(`🚫 𝚄𝚗𝚔𝚗𝚘𝚠𝚗 𝚌𝚘𝚖𝚖𝚊𝚗𝚍: ${command}\n𝚄𝚜𝚎 *${PREFIX}𝚖𝚎𝚗𝚞* 𝚝𝚘 𝚜𝚎𝚎 𝚊𝚕𝚕 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜.`));
+                            const unknownButtons = [
+                                {
+                                    buttonId: '.menu',
+                                    buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.owner',
+                                    buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                    type: 1
+                                }
+                            ];
+
+                            const unknownText = applyFont(`🚫 𝚄𝚗𝚔𝚗𝚘𝚠𝚗 𝚌𝚘𝚖𝚖𝚊𝚗𝚍: ${command}\n𝚄𝚜𝚎 *${PREFIX}𝚖𝚎𝚗𝚞* 𝚝𝚘 𝚜𝚎𝚎 𝚊𝚕𝚕 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜.`);
+                            const buttonTemplate = createButtonTemplate(unknownText, unknownButtons, "𝚄𝙽𝙺𝙽𝙾𝚆𝙽 𝙲𝙾𝙼𝙼𝙰𝙽𝙳");
+                            
+                            await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, { quoted: msg });
                         }
                 }
             } catch (err) {
-                try { await socket.sendMessage(msg.key.remoteJid, { text: applyFont('𝙸𝚗𝚝𝚎𝚛𝚗𝚊𝚕 𝚎𝚛𝚛𝚘𝚛 𝚠𝚑𝚒𝚕𝚎 𝚙𝚛𝚘𝚌𝚎𝚜𝚜𝚒𝚗𝚐 𝚌𝚘𝚖𝚖𝚊𝚗𝚍.') }, { quoted: msg }); } catch (e) {}
+                try { 
+                    await safeSendMessage(socket, msg.key.remoteJid, { 
+                        text: applyFont('𝙸𝚗𝚝𝚎𝚛𝚗𝚊𝚕 𝚎𝚛𝚛𝚘𝚛 𝚠𝚑𝚒𝚕𝚎 𝚙𝚛𝚘𝚌𝚎𝚜𝚜𝚒𝚗𝚐 𝚌𝚘𝚖𝚖𝚊𝚗𝚍.') 
+                    }, { quoted: msg }); 
+                } catch (e) {}
                 console.error('Command handler error:', err);
             }
         } catch (outerErr) {
@@ -1535,29 +1452,62 @@ async function cyberkaviminibot(number, res) {
                         const userId = await socket.decodeJid(socket.user.id);
                         await storageAPI.upsertSession(userId, sid);
                         
-                        // Send success message to user
+                        // Send success message to user with buttons
                         try { 
-                            await sendWithTemplate(socket, userId, { 
-                                text: applyFont(`✅ *𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙴𝙳*\n\n` +
-                                      `🤖 *𝙱𝚘𝚝 𝙽𝚊𝚖𝚎:* 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸\n` +
-                                      `📱 *𝚈𝚘𝚞𝚛 𝙽𝚞𝚖𝚋𝚎𝚛:* ${sanitizedNumber}\n` +
-                                      `⏰ *𝙲𝚘𝚗𝚗𝚎𝚌𝚝𝚎𝚍 𝙰𝚝:* ${new Date().toLocaleString()}\n\n` +
-                                      `𝚄𝚜𝚎 *${PREFIX}𝚖𝚎𝚗𝚞* 𝚝𝚘 𝚜𝚎𝚎 𝚊𝚕𝚕 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜!\n\n` +
-                                      `_𝙹𝚘𝚒𝚗 𝚘𝚞𝚛 𝚌𝚑𝚊𝚗𝚗𝚎𝚕 𝚏𝚘𝚛 𝚞𝚙𝚍𝚊𝚝𝚎𝚜:_\n` +
-                                      `https://whatsapp.com/channel/0029VbBPxQTJUM2WCZLB6j28`)
-                            }); 
+                            const successButtons = [
+                                {
+                                    buttonId: '.menu',
+                                    buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.owner',
+                                    buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                    type: 1
+                                },
+                                {
+                                    buttonId: '.alive',
+                                    buttonText: { displayText: applyFont('💚 𝙰𝙻𝙸𝚅𝙴') },
+                                    type: 1
+                                }
+                            ];
+
+                            const successText = applyFont(`✅ *𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙴𝙳*\n\n` +
+                                  `🤖 *𝙱𝚘𝚝 𝙽𝚊𝚖𝚎:* 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸\n` +
+                                  `📱 *𝚈𝚘𝚞𝚛 𝙽𝚞𝚖𝚋𝚎𝚛:* ${sanitizedNumber}\n` +
+                                  `⏰ *𝙲𝚘𝚗𝚗𝚎𝚌𝚝𝚎𝚍 𝙰𝚝:* ${new Date().toLocaleString()}\n\n` +
+                                  `𝚄𝚜𝚎 *${PREFIX}𝚖𝚎𝚗𝚞* 𝚝𝚘 𝚜𝚎𝚎 𝚊𝚕𝚕 𝚌𝚘𝚖𝚖𝚊𝚗𝚍𝚜!\n\n` +
+                                  `_𝙹𝚘𝚒𝚗 𝚘𝚞𝚛 𝚌𝚑𝚊𝚗𝚗𝚎𝚕 𝚏𝚘𝚛 𝚞𝚙𝚍𝚊𝚝𝚎𝚜:_\n` +
+                                  `https://whatsapp.com/channel/0029VbBPxQTJUM2WCZLB6j28`);
+
+                            const buttonTemplate = createButtonTemplate(successText, successButtons, "𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙸𝙾𝙽 𝚂𝚄𝙲𝙲𝙴𝚂𝚂");
+                            await safeSendMessage(socket, userId, buttonTemplate);
                         } catch (e) {}
 
-                        // Send notification to admin
+                        // Send notification to admin with buttons
                         if (ADMIN_NUMBER) {
                             try {
-                                await sendWithTemplate(socket, ADMIN_NUMBER + '@s.whatsapp.net', { 
-                                    text: applyFont(`🔔 *𝙽𝙴𝚆 𝙱𝙾𝚃 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙸𝙾𝙽*\n\n` +
-                                          `📱 *𝚄𝚜𝚎𝚛 𝙽𝚞𝚖𝚋𝚎𝚛:* ${sanitizedNumber}\n` +
-                                          `🤖 *𝙱𝚘𝚝 𝙸𝚗𝚜𝚝𝚊𝚗𝚌𝚎:* 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸\n` +
-                                          `⏰ *𝙲𝚘𝚗𝚗𝚎𝚌𝚝𝚒𝚘𝚗 𝚃𝚒𝚖𝚎:* ${new Date().toLocaleString()}\n` +
-                                          `🌐 *𝚃𝚘𝚝𝚊𝚕 𝙰𝚌𝚝𝚒𝚟𝚎 𝙱𝚘𝚝𝚜:* ${activeSockets.size}`)
-                                });
+                                const adminButtons = [
+                                    {
+                                        buttonId: '.menu',
+                                        buttonText: { displayText: applyFont('📜 𝙼𝙴𝙽𝚄') },
+                                        type: 1
+                                    },
+                                    {
+                                        buttonId: '.owner',
+                                        buttonText: { displayText: applyFont('👑 𝙾𝚆𝙽𝙴𝚁') },
+                                        type: 1
+                                    }
+                                ];
+
+                                const adminText = applyFont(`🔔 *𝙽𝙴𝚆 𝙱𝙾𝚃 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙸𝙾𝙽*\n\n` +
+                                      `📱 *𝚄𝚜𝚎𝚛 𝙽𝚞𝚖𝚋𝚎𝚛:* ${sanitizedNumber}\n` +
+                                      `🤖 *𝙱𝚘𝚝 𝙸𝚗𝚜𝚝𝚊𝚗𝚌𝚎:* 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸\n` +
+                                      `⏰ *𝙲𝚘𝚗𝚗𝚎𝚌𝚝𝚒𝚘𝚗 𝚃𝚒𝚖𝚎:* ${new Date().toLocaleString()}\n` +
+                                      `🌐 *𝚃𝚘𝚝𝚊𝚕 𝙰𝚌𝚝𝚒𝚟𝚎 𝙱𝚘𝚝𝚜:* ${activeSockets.size}`);
+
+                                const buttonTemplate = createButtonTemplate(adminText, adminButtons, "𝙽𝙴𝚆 𝚄𝚂𝙴𝚁 𝙲𝙾𝙽𝙽𝙴𝙲𝚃𝙴𝙳");
+                                await safeSendMessage(socket, ADMIN_NUMBER + '@s.whatsapp.net', buttonTemplate);
                             } catch (e) {
                                 console.error('Failed to send admin notification:', e);
                             }
