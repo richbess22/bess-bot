@@ -982,7 +982,7 @@ async function kavixmdminibotmessagehandler(socket, number) {
                             const q = args.join(" ");
                             if (!q) return await replygckavi(applyFont("🚫 𝙿𝚕𝚎𝚊𝚜𝚎 𝚙𝚛𝚘𝚟𝚒𝚍𝚎 𝚊 𝚜𝚎𝚊𝚛𝚌𝚑 𝚚𝚞𝚎𝚛𝚢."));
 
-                            const api = `https://okatsu-rolezapiiz.vercel.app/search/play?q=${encodeURIComponent(q)}`;
+                            const api = `https://api.nekolabs.my.id/downloader/youtube/play/v1?q=${encodeURIComponent(text)}`;
                             const { data: apiRes } = await axios.get(api, { timeout: 20000 });
 
                             if (!apiRes?.status || !apiRes.result?.url) {
