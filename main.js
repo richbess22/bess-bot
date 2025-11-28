@@ -32,7 +32,7 @@ const BOT_CONFIG = {
     channel_name: 'SILA TECH',
     group_link: 'https://chat.whatsapp.com/IdGNaKt80DEBqirc2ek4ks',
     channel_link: 'https://whatsapp.com/channel/0029VbBG4gfISTkCpKxyMH02',
-    bot_image: 'https://files.catbox.moe/ebj284.jpg'
+    bot_image: 'https://files.catbox.moe/dlvrav.jpg'
 };
 
 const OWNER_NUMBERS = (process.env.OWNER_NUMBERS || '255612491554').split(',').filter(Boolean);
