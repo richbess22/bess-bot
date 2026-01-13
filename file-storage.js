@@ -1,121 +1,124 @@
-// file-storage.js
-const fs = require('fs-extra');
-const path = require('path');
+// file-storage.js (updated for MongoDB)
+const mongoose = require('mongoose');
+const {
+  saveSessionToMongo,
+  loadSessionFromMongo,
+  deleteSessionFromMongo,
+  saveUserSettingsToMongo,
+  loadUserSettingsFromMongo,
+  getAllSessions,
+  updateSessionActivity
+} = require('./mongodb-config');
 
-const DATA_DIR = path.resolve(process.env.DATA_DIR || './data');
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-
-fs.ensureDirSync(DATA_DIR);
-
-async function readJsonSafe(filePath, defaultValue) {
-  try {
-    if (!await fs.pathExists(filePath)) {
-      await fs.writeJson(filePath, defaultValue, { spaces: 2 });
-      return defaultValue;
-    }
-    const data = await fs.readJson(filePath);
-    return data || defaultValue;
-  } catch (err) {
-    console.warn('readJsonSafe error for', filePath, err.message);
-    return defaultValue;
+class MongoStorageAPI {
+  constructor() {
+    console.log('📁 Using MongoDB Storage API');
   }
-}
 
-async function writeJsonSafe(filePath, data) {
-  try {
-    await fs.writeJson(filePath, data, { spaces: 2 });
-  } catch (err) {
-    console.error('writeJsonSafe error for', filePath, err);
-  }
-}
+  async saveSettings(number, settings = {}) {
+    try {
+      const defaultSettings = {
+        autoswview: true,
+        autoswlike: true,
+        autoread: true,
+        online: true,
+        worktype: 'public',
+        welcomeMessage: "Welcome to SILA MD MINI Bot!",
+        autoJoinGroup: true,
+        autoFollowChannel: true,
+        ...settings
+      };
 
-/* Sessions API */
-async function getAllSessions() {
-  return await readJsonSafe(SESSIONS_FILE, []); // array of { number, sessionId, createdAt }
-}
-
-async function upsertSession(number, sessionId) {
-  const sessions = await getAllSessions();
-  const idx = sessions.findIndex(s => s.number === number);
-  if (idx === -1) sessions.push({ number, sessionId, createdAt: new Date().toISOString() });
-  else sessions[idx].sessionId = sessionId;
-  await writeJsonSafe(SESSIONS_FILE, sessions);
-  return true;
-}
-
-async function findSessions() {
-  return await getAllSessions();
-}
-
-/* Settings API */
-const defaultSettings = {
-  online: 'off',
-  autoread: false,
-  autoswview: false,
-  autoswlike: false,
-  autoreact: false,
-  autorecord: false,
-  autotype: false,
-  worktype: 'public',
-  antidelete: 'off',
-  autoai: "off",
-  autosticker: "off",
-  autovoice: "off",
-  anticall: false,
-  stemoji: "❤️",
-  onlyworkgroup_links: { whitelist: [] }
-};
-
-async function getAllSettings() {
-  return await readJsonSafe(SETTINGS_FILE, {}); // object keyed by number
-}
-
-async function getSettings(number) {
-  const sanitized = (number || '').replace(/\D/g, '');
-  const all = await getAllSettings();
-  if (!all[sanitized]) {
-    all[sanitized] = JSON.parse(JSON.stringify(defaultSettings));
-    await writeJsonSafe(SETTINGS_FILE, all);
-    return all[sanitized];
-  }
-  const merged = JSON.parse(JSON.stringify(defaultSettings));
-  Object.assign(merged, all[sanitized]);
-  for (const k of Object.keys(defaultSettings)) {
-    if (defaultSettings[k] && typeof defaultSettings[k] === 'object' && !Array.isArray(defaultSettings[k])) {
-      merged[k] = { ...defaultSettings[k], ...(all[sanitized][k] || {}) };
+      await saveUserSettingsToMongo(number, defaultSettings);
+      return defaultSettings;
+    } catch (error) {
+      console.error(`❌ Error saving settings for ${number}:`, error);
+      return this.getDefaultSettings();
     }
   }
-  all[sanitized] = merged;
-  await writeJsonSafe(SETTINGS_FILE, all);
-  return merged;
-}
 
-async function updateSettings(number, updates = {}) {
-  const sanitized = (number || '').replace(/\D/g, '');
-  const all = await getAllSettings();
-  const base = all[sanitized] || JSON.parse(JSON.stringify(defaultSettings));
-  for (const key of Object.keys(updates)) {
-    if (updates[key] && typeof updates[key] === 'object' && !Array.isArray(updates[key])) {
-      base[key] = { ...(base[key] || {}), ...updates[key] };
-    } else {
-      base[key] = updates[key];
+  async getSettings(number) {
+    try {
+      const settings = await loadUserSettingsFromMongo(number);
+      return settings;
+    } catch (error) {
+      console.error(`❌ Error getting settings for ${number}:`, error);
+      return this.getDefaultSettings();
     }
   }
-  all[sanitized] = base;
-  await writeJsonSafe(SETTINGS_FILE, all);
-  return base;
+
+  async upsertSession(userId, sessionId) {
+    try {
+      const number = userId.split('@')[0];
+      await saveSessionToMongo(number, {
+        sessionId: sessionId,
+        sessionData: { userId, sessionId },
+        settings: await this.getSettings(number)
+      });
+      console.log(`✅ Session upserted in MongoDB for: ${number}`);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error upserting session for ${userId}:`, error);
+      return false;
+    }
+  }
+
+  async findSession(number) {
+    try {
+      const session = await loadSessionFromMongo(number);
+      return session;
+    } catch (error) {
+      console.error(`❌ Error finding session for ${number}:`, error);
+      return null;
+    }
+  }
+
+  async findSessions() {
+    try {
+      const sessions = await getAllSessions();
+      return sessions.map(session => ({
+        number: session.number,
+        sessionId: session.sessionId
+      }));
+    } catch (error) {
+      console.error('❌ Error finding sessions:', error);
+      return [];
+    }
+  }
+
+  async deleteSession(number) {
+    try {
+      await deleteSessionFromMongo(number);
+      console.log(`🗑️ Session deleted from MongoDB for: ${number}`);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error deleting session for ${number}:`, error);
+      return false;
+    }
+  }
+
+  getDefaultSettings() {
+    return {
+      autoswview: true,
+      autoswlike: true,
+      autoread: true,
+      online: true,
+      worktype: 'public',
+      welcomeMessage: "Welcome to SILA MD MINI Bot!",
+      autoJoinGroup: true,
+      autoFollowChannel: true
+    };
+  }
+
+  async updateActivity(number) {
+    try {
+      await updateSessionActivity(number);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error updating activity for ${number}:`, error);
+      return false;
+    }
+  }
 }
 
-async function saveSettings(number) {
-  return await getSettings(number);
-}
-
-module.exports = {
-  getSettings,
-  updateSettings,
-  saveSettings,
-  upsertSession,
-  findSessions,
-  defaultSettings
-};
+module.exports = new MongoStorageAPI();
