@@ -30,6 +30,7 @@
     "node-fetch": "3.3.2",
     "sharp": "0.34.1",
     "path": "^0.12.7",
+    "megajs": "^1.1.0",
     "fs": "0.0.1-security",
     "file-type": "21.0.0",
     "axios": "^1.2.5",
