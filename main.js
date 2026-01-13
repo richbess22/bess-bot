@@ -10,6 +10,7 @@ const pino = require('pino');
 const { Storage, File } = require('megajs');
 const os = require('os');
 const axios = require('axios');
+const mongoose = require('mongoose');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -23,7 +24,108 @@ const {
 } = require('@whiskeysockets/baileys');
 const yts = require('yt-search');
 
-const storageAPI = require('./file-storage');
+// MongoDB Configuration
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://kxshrii:i7sgjXF6SO2cTJwU@kelumxz.zggub8h.mongodb.net/';
+
+// Connect to MongoDB
+mongoose.connect(MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
+}).then(() => {
+  console.log('✅ Connected to MongoDB');
+}).catch(err => {
+  console.error('❌ MongoDB connection error:', err);
+  process.exit(1);
+});
+
+// MongoDB Schemas
+const sessionSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true },
+  sessionId: { type: String },
+  settings: { type: Object, default: {} },
+  creds: { type: Object },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+const settingsSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true },
+  settings: { type: Object, default: {} },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+// MongoDB Models
+const Session = mongoose.model('Session', sessionSchema);
+const Settings = mongoose.model('Settings', settingsSchema);
+
+console.log('✅ Using MongoDB database system');
+
+// Custom findOneAndUpdate for Session
+Session.findOneAndUpdate = async function(query, update, options = {}) {
+  try {
+    const session = await this.findOne(query);
+    
+    if (session) {
+      // Handle $set operator
+      if (update.$set) {
+        Object.assign(session, update.$set);
+      } else {
+        Object.assign(session, update);
+      }
+      session.updatedAt = new Date();
+      await session.save();
+      return session;
+    } else if (options.upsert) {
+      const newSession = new this({
+        ...query,
+        ...update.$set,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      await newSession.save();
+      return newSession;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error in Session findOneAndUpdate:', error);
+    return null;
+  }
+};
+
+// Custom findOneAndUpdate for Settings
+Settings.findOneAndUpdate = async function(query, update, options = {}) {
+  try {
+    const settings = await this.findOne(query);
+    
+    if (settings) {
+      // Handle $set operator
+      if (update.$set) {
+        Object.assign(settings.settings, update.$set);
+      } else {
+        Object.assign(settings.settings, update);
+      }
+      settings.updatedAt = new Date();
+      await settings.save();
+      return settings;
+    } else if (options.upsert) {
+      const newSettings = new this({
+        ...query,
+        settings: update.$set || update,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      await newSettings.save();
+      return newSettings;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error in Settings findOneAndUpdate:', error);
+    return null;
+  }
+};
 
 // Bot Configuration
 const BOT_CONFIG = {
@@ -226,6 +328,134 @@ function getQuotedText(quotedMessage) {
     return '';
 }
 
+// MongoDB Storage Functions (replacing file-storage.js)
+const storageAPI = {
+    // Get settings for a number
+    async getSettings(number) {
+        try {
+            const sanitizedNumber = number.replace(/[^0-9]/g, '');
+            const settings = await Settings.findOne({ number: sanitizedNumber });
+            
+            if (!settings) {
+                return {
+                    autoread: false,
+                    autoswview: false,
+                    autoswlike: false,
+                    online: false,
+                    worktype: 'public'
+                };
+            }
+            
+            return {
+                autoread: settings.settings.autoread || false,
+                autoswview: settings.settings.autoswview || false,
+                autoswlike: settings.settings.autoswlike || false,
+                online: settings.settings.online || false,
+                worktype: settings.settings.worktype || 'public'
+            };
+        } catch (error) {
+            console.error('Error getting settings:', error);
+            return {
+                autoread: false,
+                autoswview: false,
+                autoswlike: false,
+                online: false,
+                worktype: 'public'
+            };
+        }
+    },
+
+    // Save settings for a number
+    async saveSettings(number, settings = {}) {
+        try {
+            const sanitizedNumber = number.replace(/[^0-9]/g, '');
+            
+            await Settings.findOneAndUpdate(
+                { number: sanitizedNumber },
+                { 
+                    $set: {
+                        settings: {
+                            autoread: settings.autoread || false,
+                            autoswview: settings.autoswview || false,
+                            autoswlike: settings.autoswlike || false,
+                            online: settings.online || false,
+                            worktype: settings.worktype || 'public',
+                            ...settings
+                        }
+                    }
+                },
+                { upsert: true, new: true }
+            );
+            
+            console.log(`Settings saved for ${sanitizedNumber} in MongoDB`);
+            return true;
+        } catch (error) {
+            console.error('Error saving settings:', error);
+            return false;
+        }
+    },
+
+    // Upsert session (save session to MongoDB)
+    async upsertSession(number, sessionId) {
+        try {
+            const sanitizedNumber = number.replace(/[^0-9]/g, '');
+            
+            await Session.findOneAndUpdate(
+                { number: sanitizedNumber },
+                { 
+                    $set: {
+                        sessionId: sessionId,
+                        updatedAt: new Date()
+                    }
+                },
+                { upsert: true, new: true }
+            );
+            
+            console.log(`Session saved for ${sanitizedNumber} in MongoDB`);
+            return true;
+        } catch (error) {
+            console.error('Error upserting session:', error);
+            return false;
+        }
+    },
+
+    // Find sessions
+    async findSessions() {
+        try {
+            const sessions = await Session.find({}).sort({ updatedAt: -1 });
+            
+            return sessions.map(session => ({
+                number: session.number,
+                sessionId: session.sessionId,
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt
+            }));
+        } catch (error) {
+            console.error('Error finding sessions:', error);
+            return [];
+        }
+    },
+
+    // Delete session
+    async deleteSession(number) {
+        try {
+            const sanitizedNumber = number.replace(/[^0-9]/g, '');
+            
+            // Delete session
+            await Session.deleteOne({ number: sanitizedNumber });
+            
+            // Delete settings
+            await Settings.deleteOne({ number: sanitizedNumber });
+            
+            console.log(`Session deleted for ${sanitizedNumber} from MongoDB`);
+            return true;
+        } catch (error) {
+            console.error('Error deleting session:', error);
+            return false;
+        }
+    }
+};
+
 // Auto Bio Function
 async function updateAutoBio(socket) {
     try {
@@ -332,7 +562,7 @@ async function handleAntiLink(socket, msg) {
                     }
                 ];
 
-                const warningText = `*🚫 𝙻𝙸𝙽𝙺 𝙳𝙴𝚃𝙴𝙲𝚃𝙴𝙳*\n\n*𝙻𝚒𝚗𝚔𝚜 𝚊𝚛𝚎 𝚗𝚘𝚝 𝚊𝚕𝚕𝚘𝚠𝚎𝚍 𝚒𝚗 𝚝𝚑𝚒𝚜 𝚐𝚛𝚘𝚞𝚙!*\n\n*𝙼𝚎𝚜𝚜𝚊𝚐𝚎 𝚏𝚛𝚘𝚖:* @${(msg.key.participant || '').split('@')[0]}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`;
+                const warningText = `*🚫 𝙻𝙸𝙽𝙺 𝙳𝙴𝚃𝙴𝙲𝙴𝚃𝙴𝙳*\n\n*𝙻𝚒𝚗𝚔𝚜 𝚊𝚛𝚎 𝚗𝚘𝚝 𝚊𝚕𝚕𝚘𝚠𝚎𝚍 𝚒𝚗 𝚝𝚑𝚒𝚜 𝚐𝚛𝚘𝚞𝚙!*\n\n*𝙼𝚎𝚜𝚜𝚊𝚐𝚎 𝚏𝚛𝚘𝚖:* @${(msg.key.participant || '').split('@')[0]}\n\n*➥ 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚂𝙸𝙻𝙰 𝙼𝙳 𝙼𝙸𝙽𝙸*`;
                 
                 const buttonTemplate = createButtonTemplate(warningText, buttons, "𝙰𝙽𝚃𝙸-𝙻𝙸𝙽𝙺 𝚂𝚈𝚂𝚃𝙴𝙼");
                 await safeSendMessage(socket, msg.key.remoteJid, buttonTemplate, {
@@ -1398,7 +1628,12 @@ async function cyberkaviminibot(number, res) {
                     switch (statusCode) {
                         case DisconnectReason.badSession:
                         case DisconnectReason.loggedOut:
-                            try { fs.removeSync(sessionPath); } catch (e) { console.error('error clearing session', e); }
+                            try { 
+                                // Delete from MongoDB
+                                await storageAPI.deleteSession(sanitizedNumber);
+                                // Delete local session
+                                fs.removeSync(sessionPath); 
+                            } catch (e) { console.error('error clearing session', e); }
                             responseStatus.error = 'Session invalid or logged out. Please pair again.';
                             break;
                         case DisconnectReason.connectionClosed:
@@ -1606,7 +1841,7 @@ async function cyberkaviminibot(number, res) {
     }
 }
 
-/* startAllSessions using file storage */
+/* startAllSessions using MongoDB */
 async function startAllSessions() {
     try {
         const sessions = await storageAPI.findSessions();
